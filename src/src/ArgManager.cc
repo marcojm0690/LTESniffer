@@ -107,115 +107,122 @@ void ArgManager::usage(Args& args, const std::string& prog) {
 void ArgManager::parseArgs(Args& args, int argc, char **argv) {
   int opt;
   defaultArgs(args);
-  while ((opt = getopt(argc, argv, "aAcCDdEfghHilLnpPrRsStTvwWyYqFIuUmOoz")) != -1) {
+  // The optstring below declares every value-taking flag with a trailing ':'
+  // and reads its value from `optarg`. The original optstring had no ':' at
+  // all and read values via argv[optind] instead; that only worked because
+  // GNU/glibc getopt() permutes non-option argv entries to the end, so a
+  // later "-f" was still found after the unconsumed value of an earlier
+  // flag. macOS's getopt() does not permute: it stops at the first
+  // unconsumed non-option token, silently dropping every flag after it.
+  while ((opt = getopt(argc, argv, "a:A:c:CD:dE:f:g:hH:i:l:Ln:p:P:r:R:sS:t:T:vwW:y:Y:q:F:I:u:Um:O:o:z:")) != -1) {
     switch (opt) {
       case 'a':
-        args.rf_args = argv[optind];
+        args.rf_args = optarg;
         break;
       case 'A':
-        args.rf_nof_rx_ant = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.rf_nof_rx_ant = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'g':
-        args.rf_gain = strtod(argv[optind], nullptr);
+        args.rf_gain = strtod(optarg, nullptr);
         break;
       case 'L':
         args.enable_shortcut_discovery = false;
         break;
       case 'H':
-        args.rnti_histogram_threshold = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.rnti_histogram_threshold = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'i':
-        args.input_file_name = argv[optind];
+        args.input_file_name = optarg;
         break;
       case 'I':
-        args.cell_id = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.cell_id = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
       case 'w':
         args.file_wrap = true;
         break;
       case 'D':
-        args.dci_file_name = argv[optind];
+        args.dci_file_name = optarg;
         break;
       case 'd':
         args.en_debug = true;
         break;
       case 'E':
-        args.stats_file_name = argv[optind];
+        args.stats_file_name = optarg;
         break;
       case 'o':
-        args.file_offset_freq = strtod(argv[optind], nullptr);
+        args.file_offset_freq = strtod(optarg, nullptr);
         break;
       case 'O':
-        args.file_offset_time = atoi(argv[optind]);
+        args.file_offset_time = atoi(optarg);
         break;
       case 'p':
-        args.nof_prb = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.nof_prb = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         args.file_nof_prb = args.nof_prb;
         break;
       case 'P':
-        args.file_nof_ports = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.file_nof_ports = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'c':
-        args.file_cell_id = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.file_cell_id = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'l':
-        args.force_N_id_2 = atoi(argv[optind]);
+        args.force_N_id_2 = atoi(optarg);
         break;
       case 'C':
         args.cell_search = true;
       case 'm':
-        args.sniffer_mode = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.sniffer_mode = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 's':
         args.skip_secondary_meta_formats = true;
         break;
       case 'S':
-        args.dci_format_split_ratio = strtod(argv[optind], nullptr);
+        args.dci_format_split_ratio = strtod(optarg, nullptr);
         break;
       case 't':
-        args.time_offset = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.time_offset = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'T':
-        args.dci_format_split_update_interval_ms = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.dci_format_split_update_interval_ms = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'r':
-        args.target_rnti = atoi(argv[optind]);
+        args.target_rnti = atoi(optarg);
         break;
       case 'R':
-        args.rnti = atoi(argv[optind]); //fix here
+        args.rnti = atoi(optarg); //fix here
         break;
       case 'y':
-        args.cpu_affinity = atoi(argv[optind]);
+        args.cpu_affinity = atoi(optarg);
         break;
       case 'Y':
-        args.decimate = atoi(argv[optind]);
+        args.decimate = atoi(optarg);
         break;
       case 'n':
-        args.nof_subframes = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.nof_subframes = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'W':
-        args.nof_sniffer_thread = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.nof_sniffer_thread = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
       break;
       case 'v':
         increase_srsran_verbose_level();
         args.verbose = get_srsran_verbose_level();
         break;
       case 'f':
-        args.rf_freq = strtod(argv[optind], nullptr);
+        args.rf_freq = strtod(optarg, nullptr);
         break;
       case 'u':
-        args.ul_freq = strtod(argv[optind], nullptr);
+        args.ul_freq = strtod(optarg, nullptr);
         break;
       case 'F':
-        args.pcap_file = argv[optind];
+        args.pcap_file = optarg;
         break;
       // case 'h':
-      //   args.harq_mode = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+      //   args.harq_mode = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
       //   break;
       case 'q':
-        args.mcs_tracking_mode = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.mcs_tracking_mode = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'z':
-        args.api_mode = static_cast<uint32_t>(strtoul(argv[optind], nullptr, 0));
+        args.api_mode = static_cast<uint32_t>(strtoul(optarg, nullptr, 0));
         break;
       case 'h':
       default:

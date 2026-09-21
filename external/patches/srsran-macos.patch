@@ -1,0 +1,365 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 26bf960..0bc45d6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -380,6 +380,10 @@ endmacro(ADD_C_COMPILER_FLAG_IF_AVAILABLE)
+ 
+ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wno-comment -Wno-reorder -Wno-unused-variable -Wtype-limits -std=c++11 -fno-strict-aliasing")
++  if(APPLE)
++    # current UHD headers need C++17
++    string(REPLACE "-std=c++11" "-std=c++17" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
++  endif()
+ 
+   ADD_C_COMPILER_FLAG_IF_AVAILABLE("-Wno-unused-but-set-variable" HAVE_WNO_UNUSED_BUT_SET_VARIABLE)
+   ADD_CXX_COMPILER_FLAG_IF_AVAILABLE("-Wno-unused-but-set-variable" HAVE_WNO_UNUSED_BUT_SET_VARIABLE)
+@@ -476,12 +480,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DIS_ARM")
+     message(STATUS "Detected ARM processor")
+     set(HAVE_NEON "True")
+-    if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64")
++    if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64" OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64")
+       set(HAVE_NEONv8 "True")
+       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DHAVE_NEONv8")
+       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_NEONv8")
+-    endif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64")
+-    if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")
++    endif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64" OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64")
++    if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm" AND NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64")
+       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfloat-abi=hard -mfpu=neon")
+       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfloat-abi=hard -mfpu=neon")
+     endif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")
+@@ -539,7 +543,7 @@ if("Ninja" STREQUAL ${CMAKE_GENERATOR})
+ endif()
+ 
+ # Add -Werror to C/C++ flags for newer compilers
+-if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0)
++if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0 AND NOT APPLE)
+   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror")
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
+ endif()
+@@ -686,4 +690,6 @@ else(ENABLE_SRSEPC)
+   message(STATUS "srsEPC build disabled")
+ endif(ENABLE_SRSEPC)
+ 
+-add_subdirectory(test)
++if(NOT APPLE)
++  add_subdirectory(test)
++endif()
+diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
+index 29b1f2f..e9a9444 100644
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -23,8 +23,12 @@
+ ########################################################################
+ add_subdirectory(src)
+ add_subdirectory(include)
+-add_subdirectory(examples)
+-add_subdirectory(test)
++if(NOT APPLE)
++  add_subdirectory(examples)
++endif()
++if(NOT APPLE)
++  add_subdirectory(test)
++endif()
+ 
+ ########################################################################
+ # Install library headers
+diff --git a/lib/include/srsran/common/threads.h b/lib/include/srsran/common/threads.h
+index 28c9380..35a99a9 100644
+--- a/lib/include/srsran/common/threads.h
++++ b/lib/include/srsran/common/threads.h
+@@ -25,7 +25,9 @@
+ #include <pthread.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#ifndef __APPLE__
+ #include <sys/timerfd.h>
++#endif
+ #include <unistd.h>
+ 
+ // Default priority for all threads below UHD threads
+@@ -45,7 +47,9 @@ void threads_print_self();
+ }
+ 
+ #include <atomic>
++#include <chrono>
+ #include <string>
++#include <thread>
+ 
+ namespace srsran {
+ 
+@@ -84,7 +88,11 @@ public:
+   void set_name(const std::string& name_)
+   {
+     name = name_;
++#ifdef __APPLE__
++    pthread_setname_np(name.c_str());
++#else
+     pthread_setname_np(pthread_self(), name.c_str());
++#endif
+   }
+ 
+   void wait_thread_finish() { pthread_join(_thread, NULL); }
+@@ -108,7 +116,11 @@ protected:
+ private:
+   static void* thread_function_entry(void* _this)
+   {
++#ifdef __APPLE__
++    pthread_setname_np(((thread*)_this)->name.c_str()); // macOS can only name the calling thread
++#else
+     pthread_setname_np(pthread_self(), ((thread*)_this)->name.c_str());
++#endif
+     ((thread*)_this)->run_thread();
+     return NULL;
+   }
+@@ -143,6 +155,9 @@ private:
+   int               timer_fd       = 0;
+   int               period_us      = 0;
+   std::atomic<bool> run_enable     = {false};
++#ifdef __APPLE__
++  std::chrono::steady_clock::time_point next_wakeup;
++#endif
+ 
+   void run_thread()
+   {
+@@ -157,6 +172,26 @@ private:
+     }
+   }
+ 
++#ifdef __APPLE__
++  // macOS has no timerfd: sleep until the next absolute deadline instead.
++  int make_periodic()
++  {
++    wakeups_missed = 0;
++    next_wakeup    = std::chrono::steady_clock::now() + std::chrono::microseconds(period_us);
++    return 0;
++  }
++
++  void wait_period()
++  {
++    std::this_thread::sleep_until(next_wakeup);
++    auto now = std::chrono::steady_clock::now();
++    next_wakeup += std::chrono::microseconds(period_us);
++    while (next_wakeup <= now) { // missed one or more periods
++      next_wakeup += std::chrono::microseconds(period_us);
++      wakeups_missed++;
++    }
++  }
++#else
+   int make_periodic()
+   {
+     int               ret = -1;
+@@ -204,6 +239,7 @@ private:
+       wakeups_missed += (missed - 1);
+     }
+   }
++#endif // __APPLE__
+ };
+ 
+ } // namespace srsran
+diff --git a/lib/src/common/CMakeLists.txt b/lib/src/common/CMakeLists.txt
+index e6c0b12..6ece68f 100644
+--- a/lib/src/common/CMakeLists.txt
++++ b/lib/src/common/CMakeLists.txt
+@@ -53,13 +53,20 @@ set(SOURCES arch_select.cc
+ set_source_files_properties(security.cc PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations)
+ 
+ add_library(srsran_common STATIC ${SOURCES})
+-add_custom_target(gen_build_info COMMAND cmake -P ${CMAKE_BINARY_DIR}/SRSRANbuildinfo.cmake)
++add_custom_target(gen_build_info COMMAND ${CMAKE_COMMAND} -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -P ${CMAKE_BINARY_DIR}/SRSRANbuildinfo.cmake)
+ add_dependencies(srsran_common gen_build_info)
+ 
+ add_executable(arch_select arch_select.cc)
+ 
+ target_include_directories(srsran_common PUBLIC ${SEC_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR} ${BACKWARD_INCLUDE_DIRS})
+-target_link_libraries(srsran_common srsran_phy support srslog ${SEC_LIBRARIES} ${BACKWARD_LIBRARIES} ${SCTP_LIBRARIES})
++target_link_libraries(srsran_common srsran_phy support srslog ${SEC_LIBRARIES} ${BACKWARD_LIBRARIES})
++if(SCTP_LIBRARIES)
++  target_link_libraries(srsran_common ${SCTP_LIBRARIES})
++endif()
++if(APPLE)
++  # netinet/sctp.h shim, see macos-compat/
++  target_include_directories(srsran_common PUBLIC ${LTESNIFFER_MACOS_COMPAT})
++endif()
+ target_compile_definitions(srsran_common PRIVATE ${BACKWARD_DEFINITIONS})
+ 
+ INSTALL(TARGETS srsran_common DESTINATION ${LIBRARY_DIR})
+diff --git a/lib/src/common/arch_select.cc b/lib/src/common/arch_select.cc
+index aa320f8..dcdf3ef 100644
+--- a/lib/src/common/arch_select.cc
++++ b/lib/src/common/arch_select.cc
+@@ -26,9 +26,11 @@
+ #include <unistd.h>
+ 
+ #ifdef IS_ARM
++#ifndef __APPLE__
+ #include <asm/hwcap.h>
+-#include <stdio.h>
+ #include <sys/auxv.h>
++#endif
++#include <stdio.h>
+ #define USER_HWCAP_NEON (1 << 12)
+ #else
+ #include <cpuid.h>
+@@ -93,6 +95,10 @@ const char* x86_get_isa()
+ #ifdef IS_ARM
+ const char* arm_get_isa()
+ {
++#ifdef __APPLE__
++  // Every Apple silicon core has NEON.
++  return "neon";
++#else
+ #ifdef HAVE_NEONv8
+   if (getauxval(AT_HWCAP) & USER_HWCAP_NEON) {
+ #else
+@@ -102,6 +108,7 @@ const char* arm_get_isa()
+   } else {
+     return "generic";
+   }
++#endif
+ }
+ #endif
+ 
+diff --git a/lib/src/common/threads.c b/lib/src/common/threads.c
+index a56df78..1a3d75a 100644
+--- a/lib/src/common/threads.c
++++ b/lib/src/common/threads.c
+@@ -53,7 +53,9 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void*
+ 
+   pthread_attr_t     attr;
+   struct sched_param param;
++#ifndef __APPLE__
+   cpu_set_t          cpuset;
++#endif
+   bool               attr_enable = false;
+ 
+ #ifdef PER_THREAD_PRIO
+@@ -124,6 +126,7 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void*
+       fprintf(stderr, "Error not enough privileges to set Scheduling priority\n");
+     }
+   }
++#ifndef __APPLE__ // macOS has no thread-to-core affinity
+   if (cpu > 0) {
+     if (cpu > 50) {
+       uint32_t mask;
+@@ -144,6 +147,7 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void*
+       perror("pthread_attr_setaffinity_np");
+     }
+   }
++#endif
+ 
+ // TSAN seems to have issues with thread attributes when running as normal user, disable them in that case
+ #if HAVE_TSAN
+@@ -178,7 +182,9 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void*
+ void threads_print_self()
+ {
+   pthread_t          thread;
++#ifndef __APPLE__
+   cpu_set_t          cpuset;
++#endif
+   struct sched_param param;
+   int                policy;
+   const char*        p;
+@@ -186,6 +192,7 @@ void threads_print_self()
+ 
+   thread = pthread_self();
+ 
++#ifndef __APPLE__
+   s = pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+   if (s != 0) {
+     printf("error pthread_getaffinity_np: %s\n", strerror(s));
+@@ -197,6 +204,7 @@ void threads_print_self()
+       printf("    CPU %d\n", j);
+     }
+   }
++#endif
+ 
+   s = pthread_getschedparam(thread, &policy, &param);
+   if (s != 0) {
+diff --git a/lib/src/radio/CMakeLists.txt b/lib/src/radio/CMakeLists.txt
+index 77b6570..fdb607a 100644
+--- a/lib/src/radio/CMakeLists.txt
++++ b/lib/src/radio/CMakeLists.txt
+@@ -24,4 +24,6 @@ if(RF_FOUND)
+   INSTALL(TARGETS srsran_radio DESTINATION ${LIBRARY_DIR})
+ endif(RF_FOUND)
+ 
+-add_subdirectory(test)
++if(NOT APPLE)
++  add_subdirectory(test)
++endif()
+diff --git a/lib/src/srslog/CMakeLists.txt b/lib/src/srslog/CMakeLists.txt
+index 635d064..7860b68 100644
+--- a/lib/src/srslog/CMakeLists.txt
++++ b/lib/src/srslog/CMakeLists.txt
+@@ -24,7 +24,8 @@ set(SOURCES
+     srslog_c.cpp
+     event_trace.cpp)
+ 
+-include_directories(${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/bundled/)
++# BEFORE: a newer system fmt (e.g. Homebrew) must not shadow the bundled one.
++include_directories(BEFORE ${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/bundled/)
+ include_directories(${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/formatters)
+ 
+ set(SOURCES
+diff --git a/lib/src/srslog/event_trace.cpp b/lib/src/srslog/event_trace.cpp
+index 4064996..3d7cd6c 100644
+--- a/lib/src/srslog/event_trace.cpp
++++ b/lib/src/srslog/event_trace.cpp
+@@ -104,7 +104,7 @@ void trace_duration_begin(const std::string& category, const std::string& name)
+ 
+   char fmt_time[24];
+   format_time(fmt_time, sizeof(fmt_time));
+-  (*tracer)("[%s] [TID:%0u] Entering \"%s\": %s", fmt_time, (unsigned)::pthread_self(), category, name);
++  (*tracer)("[%s] [TID:%0u] Entering \"%s\": %s", fmt_time, (unsigned)(uintptr_t)::pthread_self(), category, name);
+ }
+ 
+ void trace_duration_end(const std::string& category, const std::string& name)
+@@ -115,7 +115,7 @@ void trace_duration_end(const std::string& category, const std::string& name)
+ 
+   char fmt_time[24];
+   format_time(fmt_time, sizeof(fmt_time));
+-  (*tracer)("[%s] [TID:%0u] Leaving \"%s\": %s", fmt_time, (unsigned)::pthread_self(), category, name);
++  (*tracer)("[%s] [TID:%0u] Leaving \"%s\": %s", fmt_time, (unsigned)(uintptr_t)::pthread_self(), category, name);
+ }
+ 
+ } // namespace srslog
+diff --git a/lib/src/srslog/formatters/text_formatter.cpp b/lib/src/srslog/formatters/text_formatter.cpp
+index 50e126f..0267c02 100644
+--- a/lib/src/srslog/formatters/text_formatter.cpp
++++ b/lib/src/srslog/formatters/text_formatter.cpp
+@@ -20,6 +20,8 @@
+  */
+ 
+ #include "text_formatter.h"
++#include <chrono>
++#include <type_traits>
+ #include "srsran/srslog/bundled/fmt/chrono.h"
+ #include "srsran/srslog/detail/log_entry_metadata.h"
+ 
+@@ -49,7 +51,11 @@ static void format_hex_dump(const std::vector<uint8_t>& v, fmt::memory_buffer& b
+ static void format_metadata(const detail::log_entry_metadata& metadata, fmt::memory_buffer& buffer)
+ {
+   // Time stamp data preparation.
+-  std::tm current_time = fmt::gmtime(std::chrono::high_resolution_clock::to_time_t(metadata.tp));
++  std::tm current_time = fmt::gmtime(std::chrono::system_clock::to_time_t(
++                                       // high_resolution_clock is steady_clock (not wall time) on libc++.
++                                       std::chrono::system_clock::now() +
++                                       std::chrono::duration_cast<std::chrono::system_clock::duration>(
++                                           metadata.tp - std::decay_t<decltype(metadata.tp)>::clock::now())));
+   auto    us_fraction =
+       std::chrono::duration_cast<std::chrono::microseconds>(metadata.tp.time_since_epoch()).count() % 1000000u;
+   fmt::format_to(buffer, "{:%F}T{:%H:%M:%S}.{:06} ", current_time, current_time, us_fraction);
+diff --git a/lib/src/system/sys_metrics_processor.cc b/lib/src/system/sys_metrics_processor.cc
+index 80de195..9901824 100644
+--- a/lib/src/system/sys_metrics_processor.cc
++++ b/lib/src/system/sys_metrics_processor.cc
+@@ -22,7 +22,6 @@
+ #include "srsran/system/sys_metrics_processor.h"
+ #include <fstream>
+ #include <sstream>
+-#include <sys/sysinfo.h>
+ #include <unistd.h>
+ 
+ using namespace srsran;

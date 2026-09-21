@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.8.11)
+cmake_minimum_required (VERSION 3.5)
 
 #######################################################################
 #   INSTALL TARGET for make install
@@ -28,7 +28,7 @@ option(ENABLE_GUI      "Enable GUI (using srsGUI)"                ON)
 option(ENABLE_UHD      "Enable UHD"                               ON)
 option(ENABLE_BLADERF  "Enable BladeRF"                           ON)
 option(ENABLE_SOAPYSDR "Enable SoapySDR"                          ON)
-#option(ENABLE_HARDSIM  "Enable support for SIM cards"             ON)
+option(ENABLE_HARDSIM  "Enable support for SIM cards"             ON)
 
 option(BUILD_STATIC    "Attempt to statically link external deps" OFF)
 #option(RPATH           "Enable RPATH"                             OFF)
@@ -36,7 +36,7 @@ option(ENABLE_ASAN     "Enable gcc/clang address sanitizer"       OFF)
 option(ENABLE_MSAN     "Enable clang memory sanitizer"            OFF)
 option(ENABLE_TIDY     "Enable clang tidy"                        OFF)
 
-#option(USE_LTE_RATES   "Use standard LTE sampling rates"          OFF)
+option(USE_LTE_RATES   "Use standard LTE sampling rates"          OFF)
 
 set(GCC_ARCH native CACHE STRING "GCC compile for specific architecture.")
 
@@ -69,6 +69,11 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
 
 # Check for CMNAlib in system.
 
+if(APPLE)
+  # cmnalib is a Linux modem-measurement library (needs libudev) that no
+  # LTESniffer source actually uses, so skip it on macOS.
+  set(CMNALIB_LIBRARIES "")
+else(APPLE)
 find_package(CMNALIB)
 if(CMNALIB_FOUND AND NOT FORCE_SUBPROJECT_CMNALIB)
   include_directories(${CMNALIB_INCLUDE_DIRS})
@@ -91,6 +96,7 @@ else(CMNALIB_FOUND AND NOT FORCE_SUBPROJECT_CMNALIB)
   set(CMNALIB_LIBRARY cmnalib)
   set(CMNALIB_LIBRARIES ${CMNALIB_LIBRARY})
 endif(CMNALIB_FOUND AND NOT FORCE_SUBPROJECT_CMNALIB)
+endif(APPLE)
 
 message("CMNALIB_LIBRARY: " ${CMNALIB_LIBRARY})
 message("CMNALIB_LIBRARIES: " ${CMNALIB_LIBRARIES})
@@ -167,6 +173,18 @@ else(BLADERF_FOUND OR UHD_FOUND OR SOAPYSDR_FOUND)
 endif(BLADERF_FOUND OR UHD_FOUND OR SOAPYSDR_FOUND)
 
 #####################################################
+if(APPLE)
+  # netinet/sctp.h shim (no SCTP on macOS); srsRAN only needs the declarations.
+  set(LTESNIFFER_MACOS_COMPAT "${CMAKE_SOURCE_DIR}/macos-compat")
+  include_directories(${LTESNIFFER_MACOS_COMPAT})
+  # Homebrew's mbedtls (4.x) dropped the legacy API srsRAN uses; use the 3.x keg.
+  set(ENV{PKG_CONFIG_PATH} "/opt/homebrew/opt/mbedtls@3/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+  # newer clang errors on constructs srsRAN's headers rely on
+  add_compile_options(-include "${LTESNIFFER_MACOS_COMPAT}/macos_compat.h")
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-missing-template-arg-list-after-template-kw>
+    -Wno-deprecated-declarations)
+endif(APPLE)
 find_package(SRSRAN)
 if(SRSRAN_FOUND AND NOT FORCE_SUBPROJECT_SRSRAN)
   include_directories(${SRSLTE_INCLUDE_DIRS})
@@ -270,7 +288,13 @@ endmacro(ADD_CXX_COMPILER_FLAG_IF_AVAILABLE)
 
 if(CMAKE_C_COMPILER_ID MATCHES "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
   message("MARCH - FLAGS: ${GCC_ARCH}")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=${GCC_ARCH} -Wall -Wno-comment -Wno-write-strings -Winline -Wno-unused-result -Wformat -Wmissing-field-initializers -Wtype-limits -std=c99 -D_GNU_SOURCE")
+  if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    # Apple clang on arm64 has no -march=native; -mcpu=native is the equivalent.
+    set(ARCH_FLAG "-mcpu=native")
+  else()
+    set(ARCH_FLAG "-march=${GCC_ARCH}")
+  endif()
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${ARCH_FLAG} -Wall -Wno-comment -Wno-write-strings -Winline -Wno-unused-result -Wformat -Wmissing-field-initializers -Wtype-limits -std=c99 -D_GNU_SOURCE")
 
   find_package(SSE)	# evaluation comes later
 
@@ -320,7 +344,12 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
 
   if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")
 
-    set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} -mfpu=neon -march=native -DIS_ARM -DHAVE_NEON")
+    if(APPLE)
+      # arm64 always has NEON; -mfpu/-march are not valid for Apple clang.
+      set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} -DIS_ARM -DHAVE_NEON")
+    else()
+      set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} -mfpu=neon -march=native -DIS_ARM -DHAVE_NEON")
+    endif()
     message(STATUS "have ARM")
     set(HAVE_NEON "True")
   else(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")

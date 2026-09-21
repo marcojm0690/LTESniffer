@@ -130,6 +130,12 @@ bool LTESniffer_Core::run(){
   int mcs_tracking_timer = 0;
   int update_rnti_timer = 0;
   /* Set CPU affinity*/
+#ifdef __APPLE__
+  // macOS has no thread-to-core pinning API; the scheduler decides.
+  if (args.cpu_affinity > -1) {
+    printf("CPU affinity is not supported on macOS, ignoring\n");
+  }
+#else
   if (args.cpu_affinity > -1) {
     cpu_set_t cpuset;
     pthread_t thread;
@@ -146,6 +152,7 @@ bool LTESniffer_Core::run(){
       }
     }
   }
+#endif
 
   /* If RF mode (not file mode)*/
 #ifndef DISABLE_RF
