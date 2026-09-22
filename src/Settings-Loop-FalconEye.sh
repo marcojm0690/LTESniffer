@@ -5,6 +5,7 @@
 #OPERATOR="Telekom_"
 #OPERATOR="Vodafone"
 #OPERATOR="O2-DE___"
+#@Operator="I.C.E."
 
 #OPERATOR="PCI165__"	#North
 OPERATOR="PCI166__"	#West

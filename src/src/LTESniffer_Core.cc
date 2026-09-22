@@ -130,6 +130,12 @@ bool LTESniffer_Core::run(){
   int mcs_tracking_timer = 0;
   int update_rnti_timer = 0;
   /* Set CPU affinity*/
+#ifdef __APPLE__
+  // macOS has no thread-to-core pinning API; the scheduler decides.
+  if (args.cpu_affinity > -1) {
+    printf("CPU affinity is not supported on macOS, ignoring\n");
+  }
+#else
   if (args.cpu_affinity > -1) {
     cpu_set_t cpuset;
     pthread_t thread;
@@ -146,6 +152,7 @@ bool LTESniffer_Core::run(){
       }
     }
   }
+#endif
 
   /* If RF mode (not file mode)*/
 #ifndef DISABLE_RF
@@ -389,6 +396,20 @@ bool LTESniffer_Core::run(){
               exit(-1);
             } else if (n == SRSRAN_UE_MIB_FOUND) {
               srsran_pbch_mib_unpack(bch_payload, &cell, &sfn);
+              // The PBCH's 16-bit CRC occasionally passes on a weak/noisy
+              // signal despite a bad decode ("false lock"). When that
+              // happens to land on the bandwidth field's two reserved
+              // values (bit pattern 6 or 7), srsran_pbch_mib_unpack()
+              // computes a bogus PRB count (125 or 150) instead of one of
+              // the six valid LTE values. Downstream FFT/OFDM init treats
+              // that as fatal, so catch it here and keep searching instead
+              // of tearing down the whole sniffer over one bad frame.
+              if (cell.nof_prb != 6 && cell.nof_prb != 15 && cell.nof_prb != 25 &&
+                  cell.nof_prb != 50 && cell.nof_prb != 75 && cell.nof_prb != 100) {
+                printf("Discarding MIB: invalid PRB count %d (likely a false CRC pass on a weak signal)\n",
+                       cell.nof_prb);
+                break;
+              }
               srsran_cell_fprint(stdout, &cell, sfn);
               printf("Decoded MIB. SFN: %d, offset: %d\n", sfn, sfn_offset);
               sfn   = (sfn + sfn_offset) % 1024;
